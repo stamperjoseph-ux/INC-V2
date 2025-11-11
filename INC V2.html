@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>It's Not Christmas — v2</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#141414;color:#eaeaea;font-family:monospace}
+#wrap{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:8px}
+canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#0b0f14;border:4px solid #2a2a2a;border-radius:8px;
+box-shadow:0 0 0 8px #0d0d0d, inset 0 0 32px #000;width:min(96vmin,100vw);height:calc(min(96vmin,100vw)*(168/240))}
+#hud{position:absolute;top:8px;display:flex;gap:18px;font-weight:bold;text-shadow:0 1px 0 #000}
+#title{position:absolute;top:28px;letter-spacing:2px;opacity:.7}
+.dpad{display:flex;flex-direction:column;gap:6px}
+.row{display:flex;gap:6px;justify-content:center}
+button{font:inherit;padding:10px 14px;border:2px solid #3a3a3a;background:#10161d;color:#eaeaea;border-radius:6px;box-shadow:0 2px 0 #000}
+button:active{transform:translateY(2px)}
+#controls{display:flex;justify-content:center}
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.75);padding:24px;text-align:center;border-radius:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="game" width="240" height="168"></canvas>
+  <div id="hud">
+    <div id="score">Score: 0</div>
+    <div id="timer">01:30</div>
+    <div id="lives">❤❤❤❤</div>
+  </div>
+  <div id="title">IT'S NOT CHRISTMAS — v2</div>
+  <div id="controls">
+    <div class="dpad">
+      <button data-k="up">▲</button>
+      <div class="row">
+        <button data-k="left">◀</button>
+        <button data-k="right">▶</button>
+      </div>
+      <button data-k="down">▼</button>
+    </div>
+  </div>
+  <div id="start" class="screen">
+    <h2>IT'S NOT CHRISTMAS — v2</h2>
+    <p>Walk around the neighborhood and clear decorations by stepping on them.</p>
+    <ul style="text-align:left;max-width:520px;line-height:1.5">
+      <li>Arrow keys or on‑screen D‑pad to move</li>
+      <li>Decorations clear automatically when you touch them</li>
+      <li>4 lives, 90 seconds — easier pace</li>
+    </ul>
+    <button id="play">Start</button>
+  </div>
+  <div id="over" class="screen hidden">
+    <h2>Game Over</h2>
+    <p id="final"></p>
+    <button id="again">Play Again</button>
+  </div>
+</div>
+<script>
+(function(){
+  const c = document.getElementById('game');
+  const x = c.getContext('2d'); x.imageSmoothingEnabled=false;
+  const TILE = 12;  // bigger pixels
+  const W = c.width, H = c.height, COLS=W/TILE, ROWS=H/TILE;
+
+  // UI elements
+  const scoreEl = document.getElementById('score');
+  const timerEl = document.getElementById('timer');
+  const livesEl = document.getElementById('lives');
+  const startScr = document.getElementById('start');
+  const overScr = document.getElementById('over');
+  const finalEl = document.getElementById('final');
+  document.getElementById('play').onclick = start;
+  document.getElementById('again').onclick = start;
+
+  // Inputs
+  const keys = {up:false,down:false,left:false,right:false};
+  document.querySelectorAll('button[data-k]').forEach(b=>{
+    const k=b.dataset.k;
+    b.addEventListener('touchstart',e=>{e.preventDefault();keys[k]=true;});
+    b.addEventListener('touchend',e=>{e.preventDefault();keys[k]=false;});
+    b.addEventListener('mousedown',e=>{e.preventDefault();keys[k]=true;});
+    b.addEventListener('mouseup',e=>{e.preventDefault();keys[k]=false;});
+    b.addEventListener('mouseleave',e=>{keys[k]=false;});
+  });
+  window.addEventListener('keydown',e=>{
+    if(e.key==='ArrowUp')keys.up=true;
+    if(e.key==='ArrowDown')keys.down=true;
+    if(e.key==='ArrowLeft')keys.left=true;
+    if(e.key==='ArrowRight')keys.right=true;
+  });
+  window.addEventListener('keyup',e=>{
+    if(e.key==='ArrowUp')keys.up=false;
+    if(e.key==='ArrowDown')keys.down=false;
+    if(e.key==='ArrowLeft')keys.left=false;
+    if(e.key==='ArrowRight')keys.right=false;
+  });
+
+  // World generation: neighborhood
+  // 0 road, 1 sidewalk, 2 grass, 3 house (non-walkable)
+  let world=[];
+  function genWorld(){
+    world=new Array(COLS*ROWS).fill(2);
+    // Roads vertical every 10 cols
+    for(let xcol=2;xcol<COLS;xcol+=10){
+      for(let y=0;y<ROWS;y++){ world[y*COLS+xcol]=0; if(xcol+1<COLS) world[y*COLS+xcol+1]=0; }
+    }
+    // Roads horizontal every 8 rows
+    for(let yrow=4;yrow<ROWS;yrow+=8){
+      for(let xcol=0;xcol<COLS;xcol++){ world[yrow*COLS+xcol]=0; if(yrow+1<ROWS) world[(yrow+1)*COLS+xcol]=0; }
+    }
+    // Sidewalks bordering roads
+    for(let y=0;y<ROWS;y++){
+      for(let xcol=0;xcol<COLS;xcol++){
+        if(world[y*COLS+xcol]===2){
+          if((y>0 && world[(y-1)*COLS+xcol]===0)||(y<ROWS-1 && world[(y+1)*COLS+xcol]===0)||
+             (xcol>0 && world[y*COLS+(xcol-1)]===0)||(xcol<COLS-1 && world[y*COLS+(xcol+1)]===0)){
+            world[y*COLS+xcol]=1;
+          }
+        }
+      }
+    }
+    // Houses (3x3 blocks) inside grass
+    for(let y=2;y<ROWS-3;y+=8){
+      for(let xcol=2;xcol<COLS-3;xcol+=10){
+        let ok=true;
+        for(let yy=0;yy<3;yy++)for(let xx=0;xx<3;xx++){
+          const t=world[(y+yy)*COLS+(xcol+xx)];
+          if(t!==2) ok=false;
+        }
+        if(ok){
+          for(let yy=0;yy<3;yy++)for(let xx=0;xx<3;xx++){
+            world[(y+yy)*COLS+(xcol+xx)]=3;
+          }
+        }
+      }
+    }
+  }
+
+  // Player (bigger sprite, 2-frame walk)
+  const player = {x:Math.floor(COLS/2), y:Math.floor(ROWS/2), sp: 4.5/TILE, dir:'down', anim:0, animT:0};
+  // Colors
+  const C = {
+    road:'#0f1620', sidewalk:'#2b2b2b', grass:'#183b23', house:'#4a3b2a', roof:'#6b5140',
+    skin:'#ffdfc6', hair:'#2a2a2a', sweater:'#c61f2b', sweater2:'#e84545', pants:'#2d3a4a', shoes:'#0b0f14',
+    decoR:'#e04c4c', decoG:'#4fc76a', decoY:'#e0c35a', white:'#f7f7f7', curb:'#1b1b1b', ui:'#b7ff7a', warn:'#ffd36b'
+  };
+
+  function rect(px,py,w,h,color){ x.fillStyle=color; x.fillRect(px,py,w,h); }
+
+  function drawTile(xc,yc,t){
+    if(t===0){ rect(xc*TILE,yc*TILE,TILE,TILE,C.road); }
+    else if(t===1){ rect(xc*TILE,yc*TILE,TILE,TILE,C.sidewalk); }
+    else if(t===2){ rect(xc*TILE,yc*TILE,TILE,TILE,C.grass); }
+    else if(t===3){
+      rect(xc*TILE,yc*TILE,TILE,TILE,C.house);
+      rect(xc*TILE,yc*TILE, TILE, 3, C.roof);
+    }
+  }
+
+  function drawPlayer(){
+    const px=Math.floor(player.x)*TILE, py=Math.floor(player.y)*TILE;
+    rect(px, py+TILE-2, TILE, 2, 'rgba(0,0,0,.4)'); // shadow
+    // legs + shoes (2-frame)
+    const step = (player.anim<0.5)?0:1;
+    rect(px+4, py+6, 4, 4, C.pants);
+    if(step===0){ rect(px+3, py+10, 3, 2, C.shoes); rect(px+6, py+10, 3, 2, C.shoes); }
+    else { rect(px+2, py+10, 3, 2, C.shoes); rect(px+7, py+10, 3, 2, C.shoes); }
+    // sweater
+    rect(px+3, py+2, 6, 6, C.sweater);
+    rect(px+3, py+3, 6, 1, C.sweater2);
+    rect(px+3, py+7, 6, 1, C.white);
+    // face/neck + hair (short dark hair)
+    rect(px+4, py+1, 4, 2, C.skin);
+    rect(px+4, py, 4, 1, C.hair);
+    rect(px+4, py, 1, 1, C.hair); rect(px+7, py, 1, 1, C.hair);
+  }
+
+  // Decorations
+  let decos=[];
+  function spawnDeco(){
+    for(let tries=0; tries<60; tries++){
+      const dx=Math.floor(Math.random()*COLS), dy=Math.floor(Math.random()*ROWS);
+      const tile = world[dy*COLS+dx];
+      if(tile===2||tile===1){
+        const life = 9 + Math.random()*6; // easier: long life
+        decos.push({x:dx,y:dy,t:0,life:life,clear:0});
+        break;
+      }
+    }
+  }
+  function drawDeco(d,blink){
+    const bx=d.x*TILE, by=d.y*TILE;
+    if(((d.x+d.y)&1)===0){
+      const body = blink?C.white:C.decoG;
+      rect(bx+5,by+2,2,2,body);
+      rect(bx+4,by+4,4,2,body);
+      rect(bx+3,by+6,6,2,body);
+      rect(bx+5,by+8,2,2,C.decoY);
+    }else{
+      const r = blink?C.white:C.decoR;
+      rect(bx+3,by+4,6,6,r);
+      rect(bx+6,by+4,1,6,C.decoY);
+      rect(bx+3,by+7,6,1,C.decoY);
+    }
+    if(d.clear>0){
+      x.fillStyle=C.ui;
+      x.fillRect(bx+2, by+TILE-2, Math.min(TILE-4, Math.floor(d.clear*(TILE-4))), 1);
+    }
+  }
+
+  // Game state
+  let score=0, lives=4, timeLeft=90, running=false, spTimer=0, spawnEvery=2.4;
+
+  function start(){
+    genWorld();
+    player.x=Math.floor(COLS/2); player.y=Math.floor(ROWS/2); player.anim=0; player.animT=0;
+    score=0; lives=4; timeLeft=90; decos=[]; spawnEvery=2.4; spTimer=0;
+    startScr.classList.add('hidden'); overScr.classList.add('hidden'); running=true;
+  }
+  function gameOver(){
+    running=false;
+    finalEl.textContent='Final Score: '+score;
+    overScr.classList.remove('hidden');
+  }
+
+  let last=performance.now();
+  function loop(now){
+    requestAnimationFrame(loop);
+    const dt=Math.min(0.05,(now-last)/1000); last=now;
+
+    for(let y=0;y<ROWS;y++) for(let xcol=0;xcol<COLS;xcol++) drawTile(xcol,y,world[y*COLS+xcol]);
+
+    if(!running) return;
+
+    timeLeft-=dt; if(timeLeft<=0){ timeLeft=0; gameOver(); }
+    spTimer+=dt; if(spTimer>=spawnEvery){ spTimer=0; spawnDeco(); if(spawnEvery>1.2) spawnEvery-=0.02; }
+
+    let vx=(keys.right?1:0)-(keys.left?1:0);
+    let vy=(keys.down?1:0)-(keys.up?1:0);
+    if(vx&&vy){ vx*=0.7071; vy*=0.7071; }
+    player.x = Math.max(0, Math.min(COLS-1.01, player.x + vx*player.sp));
+    player.y = Math.max(0, Math.min(ROWS-1.01, player.y + vy*player.sp));
+    if(Math.abs(vx)+Math.abs(vy)>0){ player.animT+=dt*8; player.anim=(player.animT%1); }
+
+    for(let i=decos.length-1;i>=0;i--){
+      const d=decos[i];
+      d.t+=dt;
+      if(d.t>=d.life){ decos.splice(i,1); lives--; if(lives<=0) gameOver(); continue; }
+      if(Math.abs(player.x-d.x)<0.6 && Math.abs(player.y-d.y)<0.6){
+        d.clear += dt*2.6;
+        if(d.clear>=1){ decos.splice(i,1); score+=10; }
+      } else {
+        d.clear = Math.max(0, d.clear-dt*0.6);
+      }
+    }
+
+    decos.forEach(d=>{
+      const blink = (d.t/d.life>0.85) && ((Math.floor(now/150)%2)===0);
+      drawDeco(d,blink);
+    });
+
+    drawPlayer();
+
+    scoreEl.textContent='Score: '+score;
+    const m=String(Math.floor(timeLeft/60)).padStart(2,'0');
+    const s=String(Math.floor(timeLeft%60)).padStart(2,'0');
+    timerEl.textContent=`${m}:${s}`;
+    livesEl.textContent='❤'.repeat(lives)+'♡'.repeat(Math.max(0,4-lives));
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
